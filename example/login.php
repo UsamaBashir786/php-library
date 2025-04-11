@@ -1,37 +1,54 @@
 <?php
+require_once __DIR__ . '/../vendor/autoload.php';
 require_once __DIR__ . '/../src/Auth.php';
+require_once __DIR__ . '/../src/OAuthHandler.php';
+require_once __DIR__ . '/../src/Session.php';
+require_once __DIR__ . '/../src/User.php';
 
 $auth = new Auth();
+$session = new Session();
+$user = new User($session);
+$oauth = new OAuthHandler($session, $user);
 
 // If user is already logged in, redirect to dashboard
 if ($auth->isAuthenticated()) {
+  error_log("User already authenticated. Redirecting to dashboard.php");
   header('Location: dashboard.php');
   exit;
 }
 
 $error = '';
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['email'], $_POST['password'])) {
   if (!$auth->verifyCsrfToken($_POST['csrf_token'])) {
     $error = 'Invalid CSRF token';
+    error_log("CSRF token verification failed.");
   } else {
     $email = $_POST['email'];
     $password = $_POST['password'];
     $remember = isset($_POST['remember']) ? true : false;
 
     if ($auth->login($email, $password, $remember)) {
+      error_log("Email/password login successful. Redirecting to dashboard.php");
       header('Location: dashboard.php');
       exit;
     } else {
       $error = "Invalid credentials. Please try again.";
+      error_log("Email/password login failed: Invalid credentials.");
     }
   }
 }
 
-// Check for any messages (like from registration)
+// Check for any messages (like from registration or OAuth errors)
 $message = '';
 if (isset($_SESSION['message'])) {
   $message = $_SESSION['message'];
   unset($_SESSION['message']);
+}
+
+$oauthError = '';
+if (isset($_SESSION['error'])) {
+  $oauthError = $_SESSION['error'];
+  unset($_SESSION['error']);
 }
 ?>
 
@@ -345,12 +362,24 @@ if (isset($_SESSION['message'])) {
       color: #4B5563;
       font-size: 0.95rem;
     }
+
+    .social-login .btn {
+      border-radius: 0.5rem;
+      padding: 0.75rem 1rem;
+      font-weight: 600;
+      transition: all 0.2s ease;
+    }
+
+    .social-login .btn:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+    }
   </style>
 </head>
 
 <body>
   <div class="auth-layout">
-    <!-- Sidebar with pattern and illustration (similar to Laravel) -->
+    <!-- Sidebar with pattern and illustration -->
     <div class="auth-sidebar">
       <div class="pattern-dots"></div>
       <div class="auth-sidebar-content">
@@ -409,6 +438,22 @@ if (isset($_SESSION['message'])) {
             <div>
               <h5 class="alert-heading mb-1 fw-bold">Login Failed</h5>
               <p class="mb-0"><?php echo htmlspecialchars($error); ?></p>
+            </div>
+          </div>
+        </div>
+      <?php endif; ?>
+
+      <?php if (!empty($oauthError)): ?>
+        <div class="alert alert-danger p-4 mb-4" role="alert">
+          <div class="d-flex">
+            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="me-3">
+              <circle cx="12" cy="12" r="10"></circle>
+              <line x1="12" y1="8" x2="12" y2="12"></line>
+              <line x1="12" y1="16" x2="12.01" y2="16"></line>
+            </svg>
+            <div>
+              <h5 class="alert-heading mb-1 fw-bold">OAuth Login Failed</h5>
+              <p class="mb-0"><?php echo htmlspecialchars($oauthError); ?></p>
             </div>
           </div>
         </div>
@@ -487,21 +532,24 @@ if (isset($_SESSION['message'])) {
           </form>
         </div>
       </div>
+
       <!-- Social Login Buttons -->
       <div class="social-login mb-4">
         <p class="text-center mb-3">Or sign in with</p>
         <div class="d-flex justify-content-center gap-3">
-          <a href="oauth_login.php?provider=google" class="btn btn-outline-dark">
+          <a href="<?php echo $oauth->getAuthorizationUrl('google'); ?>" class="btn btn-outline-dark">
             <i class="fab fa-google me-2"></i>Google
           </a>
-          <a href="oauth_login.php?provider=facebook" class="btn btn-outline-primary">
+          <!-- Add other providers if implemented -->
+          <a href="#" class="btn btn-outline-primary disabled" title="Facebook login not implemented">
             <i class="fab fa-facebook-f me-2"></i>Facebook
           </a>
-          <a href="oauth_login.php?provider=github" class="btn btn-outline-secondary">
+          <a href="#" class="btn btn-outline-secondary disabled" title="GitHub login not implemented">
             <i class="fab fa-github me-2"></i>GitHub
           </a>
         </div>
       </div>
+
       <div class="auth-footer">
         <p>Don't have an account? <a href="register.php">Create an account</a></p>
       </div>
