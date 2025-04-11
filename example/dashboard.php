@@ -10,14 +10,17 @@ if (!$auth->isAuthenticated()) {
 
 $userId = $auth->getUser()->getUserId();
 
-echo "Welcome, " . htmlspecialchars($auth->getSession()->get('username')) . "! ";
-
+// Check if user is admin and redirect automatically
 if ($auth->hasRole($userId, 'Admin')) {
-  echo "You are an Admin. <a href='admin_panel.php'>Go to Admin Panel</a>";
-} else {
-  echo "You are a User.";
+  header('Location: admin_dashboard.php');
+  exit;
 }
 
+// If we get here, user is not an admin
+echo "Welcome, " . htmlspecialchars($auth->getSession()->get('username')) . "! ";
+echo "You are a User.";
+
+// Check for specific permissions
 if ($auth->hasPermission($userId, 'edit_content')) {
   echo "<p>You can edit content.</p>";
 }
