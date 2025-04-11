@@ -39,5 +39,15 @@ CREATE TABLE role_permissions (
     FOREIGN KEY (permission_id) REFERENCES permissions(id) ON DELETE CASCADE
 );
 
+-- Create the remember me tokens table
+CREATE TABLE IF NOT EXISTS user_remember_tokens (
+    user_id INT NOT NULL,
+    token VARCHAR(255) NOT NULL,
+    expires_at DATETIME NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (user_id),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
 -- Insert default roles
 INSERT INTO roles (id, name, description) VALUES (1, 'User', 'Regular user'), (2, 'Admin', 'Administrator');
