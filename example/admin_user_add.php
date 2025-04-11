@@ -9,65 +9,110 @@ if (!$auth->isAuthenticated()) {
   exit;
 }
 
-$adminId = $auth->getUser()->getUserId();
-if (!$auth->hasRole($adminId, 'Admin')) {
-  // Redirect non-admin users
+$userId = $auth->getUser()->getUserId();
+if (!$auth->hasRole($userId, 'Admin')) {
   header('Location: dashboard.php');
   exit;
 }
 
-// Get user ID from query string
-if (!isset($_GET['id']) || !is_numeric($_GET['id'])) {
-  header('Location: admin_dashboard.php');
-  exit;
-}
-
-$userId = intval($_GET['id']);
+// Get database connection
 $db = (new Database())->getConnection();
 
-// Get user details
-$stmt = $db->prepare("
-  SELECT u.*, GROUP_CONCAT(r.name SEPARATOR ', ') as roles
-  FROM users u
-  LEFT JOIN user_roles ur ON u.id = ur.user_id
-  LEFT JOIN roles r ON ur.role_id = r.id
-  WHERE u.id = ?
-  GROUP BY u.id
-");
-$stmt->execute([$userId]);
-$user = $stmt->fetch(PDO::FETCH_ASSOC);
-
-if (!$user) {
-  // User not found, redirect to dashboard
-  header('Location: admin_dashboard.php');
-  exit;
+// Get all available roles
+try {
+  $stmt = $db->query("SELECT id, name FROM roles ORDER BY name");
+  $roles = $stmt->fetchAll(PDO::FETCH_ASSOC);
+} catch (PDOException $e) {
+  $error = "Database error: " . $e->getMessage();
+  $roles = [];
 }
 
-// Get user permissions via roles
-$stmt = $db->prepare("
-  SELECT DISTINCT p.name
-  FROM permissions p
-  JOIN role_permissions rp ON p.id = rp.permission_id
-  JOIN user_roles ur ON rp.role_id = ur.role_id
-  WHERE ur.user_id = ?
-  ORDER BY p.name
-");
-$stmt->execute([$userId]);
-$userPermissions = $stmt->fetchAll(PDO::FETCH_COLUMN);
+$errors = [];
+$success = '';
 
-// Get login history (this would require a login_history table to be implemented)
-// Example query if you had such a table:
-// $stmt = $db->prepare("SELECT * FROM login_history WHERE user_id = ? ORDER BY login_time DESC LIMIT 10");
-// $stmt->execute([$userId]);
-// $loginHistory = $stmt->fetchAll(PDO::FETCH_ASSOC);
+// Process form submission
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+  if (!$auth->verifyCsrfToken($_POST['csrf_token'])) {
+    $errors[] = 'Invalid CSRF token. Please try again.';
+  } else {
+    // Validate input
+    $username = htmlspecialchars(trim($_POST['username'] ?? ''));
+    $email = filter_input(INPUT_POST, 'email', FILTER_VALIDATE_EMAIL);
+    $password = $_POST['password'] ?? '';
+    $confirmPassword = $_POST['confirm_password'] ?? '';
+    $contactNumber = htmlspecialchars(trim($_POST['contact_number'] ?? ''));
+    $cnic = htmlspecialchars(trim($_POST['cnic'] ?? ''));
+    $selectedRoles = $_POST['roles'] ?? [];
+
+    // Validation
+    if (empty($username) || strlen($username) < 3) {
+      $errors[] = 'Username must be at least 3 characters long.';
+    }
+
+    if (!$email) {
+      $errors[] = 'Please enter a valid email address.';
+    }
+
+    if (empty($password) || strlen($password) < 8) {
+      $errors[] = 'Password must be at least 8 characters long.';
+    }
+
+    if ($password !== $confirmPassword) {
+      $errors[] = 'Passwords do not match.';
+    }
+
+    // Validate contact number format if provided
+    if (!empty($contactNumber) && !preg_match('/^\+92\s\d{10}$/', $contactNumber)) {
+      $errors[] = 'Invalid contact number format. Use format: +92 3196977218';
+    }
+
+    // Validate CNIC format if provided
+    if (!empty($cnic) && !preg_match('/^\d{5}-\d{7}-\d{1}$/', $cnic)) {
+      $errors[] = 'Invalid CNIC format. Use format: 36502-6011487-8';
+    }
+
+    // If no errors, proceed with user creation
+    if (empty($errors)) {
+      try {
+        // Check if username or email already exists
+        $stmt = $db->prepare("SELECT COUNT(*) FROM users WHERE username = ? OR email = ?");
+        $stmt->execute([$username, $email]);
+        if ($stmt->fetchColumn() > 0) {
+          $errors[] = 'Username or email already exists.';
+        } else {
+          // Create the user
+          $newUserId = $auth->register($username, $email, $password, $contactNumber ?: null, $cnic ?: null);
+
+          if ($newUserId) {
+            // Assign selected roles
+            foreach ($selectedRoles as $roleId) {
+              $auth->assignRole($newUserId, $roleId);
+            }
+
+            $success = "User '$username' has been created successfully.";
+
+            // Clear form data
+            $username = $email = $password = $confirmPassword = $contactNumber = $cnic = '';
+            $selectedRoles = [];
+          } else {
+            $errors[] = 'Failed to create user. Please try again.';
+          }
+        }
+      } catch (PDOException $e) {
+        $errors[] = 'Database error: ' . $e->getMessage();
+      }
+    }
+  }
+}
 ?>
 
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>User Details | RoleAuth Admin</title>
+  <title>Add New User | Admin Dashboard</title>
   <!-- Bootstrap CSS -->
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/css/bootstrap.min.css" rel="stylesheet">
   <!-- Font Awesome -->
@@ -87,394 +132,366 @@ $userPermissions = $stmt->fetchAll(PDO::FETCH_COLUMN);
     }
 
     body {
-      background-color: #F3F4F6;
       font-family: 'Nunito', sans-serif;
-      color: #374151;
-      min-height: 100vh;
+      background-color: #F3F4F6;
     }
-    
-    .sidebar {
-      background-color: #1F2937;
-      min-height: 100vh;
-      position: fixed;
-      width: 250px;
-    }
-    
-    .main-content {
-      margin-left: 250px;
-      padding: 2rem;
-    }
-    
-    .sidebar-logo {
-      padding: 1.5rem;
+
+    .navbar-brand {
+      font-weight: 700;
       display: flex;
       align-items: center;
-      color: white;
-      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
     }
-    
-    .sidebar-logo svg {
-      width: 2rem;
-      height: 2rem;
-      margin-right: 0.75rem;
+
+    .navbar-brand svg {
+      margin-right: 0.5rem;
     }
-    
-    .sidebar-logo-text {
-      font-weight: 800;
-      font-size: 1.5rem;
-    }
-    
-    .sidebar-menu {
-      padding: 1rem 0;
-    }
-    
-    .sidebar-menu-item {
-      padding: 0.75rem 1.5rem;
-      display: flex;
-      align-items: center;
-      color: rgba(255, 255, 255, 0.7);
-      text-decoration: none;
-      transition: all 0.2s;
-    }
-    
-    .sidebar-menu-item:hover, .sidebar-menu-item.active {
-      background-color: rgba(255, 255, 255, 0.1);
-      color: white;
-    }
-    
-    .sidebar-menu-item svg {
-      width: 1.25rem;
-      height: 1.25rem;
-      margin-right: 0.75rem;
-    }
-    
+
     .card {
-      border: none;
       border-radius: 0.75rem;
-      box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06);
-      margin-bottom: 2rem;
+      box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+      border: none;
     }
-    
+
     .card-header {
       background-color: white;
-      padding: 1.25rem 1.5rem;
       border-bottom: 1px solid #E5E7EB;
       font-weight: 700;
-      font-size: 1.25rem;
+      padding: 1rem 1.5rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
       border-radius: 0.75rem 0.75rem 0 0 !important;
     }
-    
-    .user-avatar-lg {
-      width: 100px;
-      height: 100px;
-      border-radius: 50%;
-      background-color: var(--primary-color);
+
+    .sidebar {
+      background-color: white;
+      border-right: 1px solid #E5E7EB;
+      min-height: calc(100vh - 56px);
+    }
+
+    .sidebar-link {
       display: flex;
       align-items: center;
-      justify-content: center;
-      color: white;
-      font-weight: 700;
-      font-size: 2.5rem;
-      margin-bottom: 1rem;
+      padding: 0.75rem 1.25rem;
+      color: #4B5563;
+      text-decoration: none;
+      border-left: 3px solid transparent;
     }
-    
-    .badge {
+
+    .sidebar-link:hover {
+      background-color: #F3F4F6;
+      color: var(--primary-color);
+    }
+
+    .sidebar-link.active {
+      background-color: #EEF2FF;
+      color: var(--primary-color);
+      border-left-color: var(--primary-color);
       font-weight: 600;
-      padding: 0.35em 0.65em;
-      border-radius: 0.375rem;
     }
-    
-    .badge-admin {
-      background-color: var(--primary-color);
+
+    .sidebar-icon {
+      margin-right: 0.75rem;
+      font-size: 1.1rem;
     }
-    
-    .badge-user {
-      background-color: var(--success-color);
+
+    .content-wrapper {
+      padding: 1.5rem;
     }
-    
-    .badge-permission {
-      background-color: var(--secondary-color);
-    }
-    
+
     .btn-primary {
       background-color: var(--primary-color);
       border-color: var(--primary-color);
     }
-    
+
     .btn-primary:hover {
       background-color: var(--primary-hover);
       border-color: var(--primary-hover);
     }
-    
-    .info-label {
+
+    .form-label {
       font-weight: 600;
-      color: #6B7280;
-      margin-bottom: 0.25rem;
+      color: #4B5563;
     }
-    
-    .info-value {
-      margin-bottom: 1.5rem;
+
+    .required::after {
+      content: " *";
+      color: var(--danger-color);
+    }
+
+    .form-check-input:checked {
+      background-color: var(--primary-color);
+      border-color: var(--primary-color);
+    }
+
+    .alert-validation {
+      background-color: #FEF2F2;
+      border-color: #F87171;
+      color: #B91C1C;
+      border-radius: 0.5rem;
+    }
+
+    .form-text {
+      color: #6B7280;
+      font-size: 0.85rem;
+    }
+
+    .password-toggle-icon {
+      position: absolute;
+      right: 1rem;
+      top: 50%;
+      transform: translateY(-50%);
+      cursor: pointer;
+      color: #6B7280;
     }
   </style>
 </head>
+
 <body>
-  <!-- Sidebar -->
-  <div class="sidebar">
-    <div class="sidebar-logo">
-      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" fill="#6366F1" stroke="#6366F1" />
-        <path d="M9 12l2 2 4-4" stroke="white" stroke-width="2" />
-      </svg>
-      <span class="sidebar-logo-text">RoleAuth</span>
-    </div>
-    
-    <div class="sidebar-menu">
-      <a href="admin_dashboard.php" class="sidebar-menu-item">
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <rect x="3" y="3" width="7" height="7"></rect>
-          <rect x="14" y="3" width="7" height="7"></rect>
-          <rect x="14" y="14" width="7" height="7"></rect>
-          <rect x="3" y="14" width="7" height="7"></rect>
+
+  <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+    <div class="container-fluid">
+      <a class="navbar-brand" href="dashboard.php">
+        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="#6366F1" stroke="#6366F1" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+          <path d="M9 12l2 2 4-4" stroke="white" />
         </svg>
-        Dashboard
+        RoleAuth Admin
       </a>
-      <a href="admin_dashboard.php" class="sidebar-menu-item active">
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
-          <circle cx="9" cy="7" r="4"></circle>
-          <path d="M23 21v-2a4 4 0 0 0-3-3.87"></path>
-          <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
-        </svg>
-        User Management
-      </a>
-      <a href="admin_roles.php" class="sidebar-menu-item">
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M21 15l-9-15-9 15"></path>
-          <path d="M3 15h18"></path>
-          <path d="M12 15v6"></path>
-        </svg>
-        Role Management
-      </a>
-      <a href="admin_permissions.php" class="sidebar-menu-item">
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
-          <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
-        </svg>
-        Permission Management
-      </a>
-      <div class="mt-auto" style="margin-top: 2rem;">
-        <a href="dashboard.php" class="sidebar-menu-item">
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
-            <polyline points="16 17 21 12 16 7"></polyline>
-            <line x1="21" y1="12" x2="9" y2="12"></line>
-          </svg>
-          User Dashboard
-        </a>
-        <a href="logout.php" class="sidebar-menu-item">
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
-            <polyline points="16 17 21 12 16 7"></polyline>
-            <line x1="21" y1="12" x2="9" y2="12"></line>
-          </svg>
-          Logout
-        </a>
+      <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
+        <span class="navbar-toggler-icon"></span>
+      </button>
+      <div class="collapse navbar-collapse" id="navbarNav">
+        <ul class="navbar-nav ms-auto">
+          <li class="nav-item">
+            <a class="nav-link" href="dashboard.php">Dashboard</a>
+          </li>
+          <li class="nav-item dropdown">
+            <a class="nav-link dropdown-toggle" href="#" id="navbarDropdown" role="button" data-bs-toggle="dropdown">
+              <?php echo htmlspecialchars($auth->getSession()->get('username')); ?>
+            </a>
+            <ul class="dropdown-menu dropdown-menu-end">
+              <li><a class="dropdown-item" href="profile.php">Profile</a></li>
+              <li>
+                <hr class="dropdown-divider">
+              </li>
+              <li><a class="dropdown-item" href="logout.php">Logout</a></li>
+            </ul>
+          </li>
+        </ul>
       </div>
     </div>
-  </div>
-  
-  <!-- Main Content -->
-  <div class="main-content">
-    <div class="d-flex justify-content-between align-items-center mb-4">
-      <h1 class="mb-0">User Details</h1>
-      <div>
-        <a href="admin_dashboard.php" class="btn btn-outline-primary">
-          <i class="fas fa-arrow-left me-2"></i> Back to Dashboard
-        </a>
-      </div>
-    </div>
-    
+  </nav>
+
+  <div class="container-fluid">
     <div class="row">
-      <div class="col-md-4">
-        <div class="card">
-          <div class="card-body text-center">
-            <div class="user-avatar-lg mx-auto">
-              <?php echo strtoupper(substr($user['username'], 0, 1)); ?>
-            </div>
-            <h3 class="mb-1"><?php echo htmlspecialchars($user['username']); ?></h3>
-            <p class="text-muted mb-3"><?php echo htmlspecialchars($user['email']); ?></p>
-            
-            <div class="mb-3">
-              <?php 
-                $rolesArray = explode(', ', $user['roles'] ?? '');
-                foreach ($rolesArray as $role): 
-                  if (!empty($role)):
-                    $badgeClass = ($role === 'Admin') ? 'badge-admin' : 'badge-user';
-              ?>
-                <span class="badge <?php echo $badgeClass; ?> me-1"><?php echo htmlspecialchars($role); ?></span>
-              <?php 
-                  endif;
-                endforeach; 
-              ?>
-            </div>
-            
-            <div class="d-grid gap-2">
-              <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#editUserModal">
-                <i class="fas fa-edit me-2"></i> Edit User
-              </button>
-              <?php if ($user['id'] !== $adminId): ?>
-              <a href="admin_dashboard.php?delete=<?php echo $user['id']; ?>" class="btn btn-danger" onclick="return confirm('Are you sure you want to delete this user?');">
-                <i class="fas fa-trash me-2"></i> Delete User
-              </a>
-              <?php endif; ?>
-            </div>
-          </div>
+      <!-- Sidebar -->
+      <div class="col-lg-2 col-md-3 p-0 sidebar">
+        <div class="pt-3">
+          <a href="admin_panel.php" class="sidebar-link">
+            <i class="fas fa-tachometer-alt sidebar-icon"></i> Dashboard
+          </a>
+          <a href="admin_users.php" class="sidebar-link active">
+            <i class="fas fa-users sidebar-icon"></i> Users
+          </a>
+          <a href="admin_roles.php" class="sidebar-link">
+            <i class="fas fa-user-tag sidebar-icon"></i> Roles
+          </a>
+          <a href="admin_permissions.php" class="sidebar-link">
+            <i class="fas fa-key sidebar-icon"></i> Permissions
+          </a>
+          <a href="admin_settings.php" class="sidebar-link">
+            <i class="fas fa-cog sidebar-icon"></i> Settings
+          </a>
         </div>
       </div>
-      
-      <div class="col-md-8">
-        <div class="card mb-4">
-          <div class="card-header">User Information</div>
-          <div class="card-body">
-            <div class="row">
-              <div class="col-md-6">
-                <p class="info-label">User ID</p>
-                <p class="info-value"><?php echo $user['id']; ?></p>
-                
-                <p class="info-label">Username</p>
-                <p class="info-value"><?php echo htmlspecialchars($user['username']); ?></p>
-                
-                <p class="info-label">Email</p>
-                <p class="info-value"><?php echo htmlspecialchars($user['email']); ?></p>
-              </div>
-              
-              <div class="col-md-6">
-                <p class="info-label">Contact Number</p>
-                <p class="info-value">
-                  <?php echo !empty($user['contact_number']) ? htmlspecialchars($user['contact_number']) : '<span class="text-muted">Not provided</span>'; ?>
-                </p>
-                
-                <p class="info-label">CNIC</p>
-                <p class="info-value">
-                  <?php echo !empty($user['cnic']) ? htmlspecialchars($user['cnic']) : '<span class="text-muted">Not provided</span>'; ?>
-                </p>
-                
-                <p class="info-label">Created On</p>
-                <p class="info-value"><?php echo date('F j, Y, g:i a', strtotime($user['created_at'])); ?></p>
-              </div>
-            </div>
+
+      <!-- Main content -->
+      <div class="col-lg-10 col-md-9 content-wrapper">
+        <nav aria-label="breadcrumb">
+          <ol class="breadcrumb">
+            <li class="breadcrumb-item"><a href="admin_panel.php">Dashboard</a></li>
+            <li class="breadcrumb-item"><a href="admin_users.php">Users</a></li>
+            <li class="breadcrumb-item active">Add New User</li>
+          </ol>
+        </nav>
+
+        <?php if (!empty($success)): ?>
+          <div class="alert alert-success alert-dismissible fade show" role="alert">
+            <?php echo htmlspecialchars($success); ?>
+            <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
           </div>
-        </div>
-        
-        <div class="card mb-4">
-          <div class="card-header">Permissions</div>
-          <div class="card-body">
-            <?php if (!empty($userPermissions)): ?>
-              <?php foreach($userPermissions as $permission): ?>
-                <span class="badge badge-permission me-2 mb-2"><?php echo htmlspecialchars($permission); ?></span>
+        <?php endif; ?>
+
+        <?php if (!empty($errors)): ?>
+          <div class="alert alert-danger alert-dismissible fade show" role="alert">
+            <strong>There were some problems with your input:</strong>
+            <ul class="mb-0 mt-2">
+              <?php foreach ($errors as $error): ?>
+                <li><?php echo htmlspecialchars($error); ?></li>
               <?php endforeach; ?>
-            <?php else: ?>
-              <p class="text-muted">No specific permissions assigned.</p>
-            <?php endif; ?>
+            </ul>
+            <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
           </div>
-        </div>
-        
-        <div class="card">
-          <div class="card-header">OAuth Information</div>
+        <?php endif; ?>
+
+        <div class="card mb-4">
+          <div class="card-header">
+            <h5 class="card-title mb-0">Add New User</h5>
+          </div>
           <div class="card-body">
-            <div class="row">
-              <div class="col-md-6">
-                <p class="info-label">OAuth Provider</p>
-                <p class="info-value">
-                  <?php if (!empty($user['oauth_provider'])): ?>
-                    <span class="badge bg-info"><?php echo htmlspecialchars(ucfirst($user['oauth_provider'])); ?></span>
-                  <?php else: ?>
-                    <span class="text-muted">Not using OAuth</span>
-                  <?php endif; ?>
-                </p>
-              </div>
-              
-              <div class="col-md-6">
-                <p class="info-label">OAuth ID</p>
-                <p class="info-value">
-                  <?php echo !empty($user['oauth_id']) ? htmlspecialchars($user['oauth_id']) : '<span class="text-muted">Not applicable</span>'; ?>
-                </p>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  </div>
-  
-  <!-- Edit User Modal -->
-  <div class="modal fade" id="editUserModal" tabindex="-1" aria-labelledby="editUserModalLabel" aria-hidden="true">
-    <div class="modal-dialog">
-      <div class="modal-content">
-        <div class="modal-header">
-          <h5 class="modal-title" id="editUserModalLabel">Edit User: <?php echo htmlspecialchars($user['username']); ?></h5>
-          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-        </div>
-        <form action="admin_user_edit.php" method="POST">
-          <div class="modal-body">
-            <input type="hidden" name="user_id" value="<?php echo $user['id']; ?>">
-            <input type="hidden" name="csrf_token" value="<?php echo $auth->generateCsrfToken(); ?>">
-            
-            <div class="mb-3">
-              <label for="username" class="form-label">Username</label>
-              <input type="text" class="form-control" id="username" name="username" value="<?php echo htmlspecialchars($user['username']); ?>" required>
-            </div>
-            
-            <div class="mb-3">
-              <label for="email" class="form-label">Email</label>
-              <input type="email" class="form-control" id="email" name="email" value="<?php echo htmlspecialchars($user['email']); ?>" required>
-            </div>
-            
-            <div class="mb-3">
-              <label for="contact_number" class="form-label">Contact Number</label>
-              <input type="text" class="form-control" id="contact_number" name="contact_number" value="<?php echo htmlspecialchars($user['contact_number'] ?? ''); ?>">
-            </div>
-            
-            <div class="mb-3">
-              <label for="cnic" class="form-label">CNIC</label>
-              <input type="text" class="form-control" id="cnic" name="cnic" value="<?php echo htmlspecialchars($user['cnic'] ?? ''); ?>">
-            </div>
-            
-            <div class="mb-3">
-              <label class="form-label">Roles</label>
-              <?php 
-                // Get all available roles
-                $stmt = $db->query("SELECT id, name FROM roles ORDER BY id");
-                $availableRoles = $stmt->fetchAll(PDO::FETCH_ASSOC);
-                
-                $userRoles = explode(', ', $user['roles'] ?? '');
-                foreach ($availableRoles as $role): 
-              ?>
-                <div class="form-check">
-                  <input class="form-check-input" type="checkbox" name="roles[]" value="<?php echo $role['id']; ?>" id="role_<?php echo $role['id']; ?>" 
-                    <?php echo in_array($role['name'], $userRoles) ? 'checked' : ''; ?>>
-                  <label class="form-check-label" for="role_<?php echo $role['id']; ?>">
-                    <?php echo htmlspecialchars($role['name']); ?>
-                  </label>
+            <form method="POST" action="">
+              <input type="hidden" name="csrf_token" value="<?php echo $auth->generateCsrfToken(); ?>">
+
+              <div class="row">
+                <div class="col-md-6 mb-3">
+                  <label for="username" class="form-label required">Username</label>
+                  <input type="text" class="form-control" id="username" name="username" value="<?php echo isset($username) ? htmlspecialchars($username) : ''; ?>" required>
+                  <div class="form-text">Must be at least 3 characters long.</div>
                 </div>
-              <?php endforeach; ?>
-            </div>
-            
-            <div class="mb-3">
-              <label for="new_password" class="form-label">New Password (leave empty to keep current)</label>
-              <input type="password" class="form-control" id="new_password" name="new_password">
-            </div>
+
+                <div class="col-md-6 mb-3">
+                  <label for="email" class="form-label required">Email Address</label>
+                  <input type="email" class="form-control" id="email" name="email" value="<?php echo isset($email) ? htmlspecialchars($email) : ''; ?>" required>
+                </div>
+              </div>
+
+              <div class="row">
+                <div class="col-md-6 mb-3 position-relative">
+                  <label for="password" class="form-label required">Password</label>
+                  <input type="password" class="form-control" id="password" name="password" required>
+                  <i class="fas fa-eye-slash password-toggle-icon" id="togglePassword"></i>
+                  <div class="form-text">Must be at least 8 characters long.</div>
+                </div>
+
+                <div class="col-md-6 mb-3 position-relative">
+                  <label for="confirm_password" class="form-label required">Confirm Password</label>
+                  <input type="password" class="form-control" id="confirm_password" name="confirm_password" required>
+                  <i class="fas fa-eye-slash password-toggle-icon" id="toggleConfirmPassword"></i>
+                </div>
+              </div>
+
+              <div class="row">
+                <div class="col-md-6 mb-3">
+                  <label for="contact_number" class="form-label">Contact Number</label>
+                  <input type="text" class="form-control" id="contact_number" name="contact_number" value="<?php echo isset($contactNumber) ? htmlspecialchars($contactNumber) : ''; ?>" placeholder="+92 3196977218">
+                  <div class="form-text">Optional. Format: +92 3196977218</div>
+                </div>
+
+                <div class="col-md-6 mb-3">
+                  <label for="cnic" class="form-label">CNIC</label>
+                  <input type="text" class="form-control" id="cnic" name="cnic" value="<?php echo isset($cnic) ? htmlspecialchars($cnic) : ''; ?>" placeholder="36502-6011487-8">
+                  <div class="form-text">Optional. Format: 36502-6011487-8</div>
+                </div>
+              </div>
+
+              <div class="mb-4">
+                <label class="form-label">Roles</label>
+                <div class="row">
+                  <?php foreach ($roles as $role): ?>
+                    <div class="col-md-3 mb-2">
+                      <div class="form-check">
+                        <input class="form-check-input" type="checkbox" name="roles[]" value="<?php echo $role['id']; ?>" id="role<?php echo $role['id']; ?>"
+                          <?php if (isset($selectedRoles) && in_array($role['id'], $selectedRoles)) echo 'checked'; ?>>
+                        <label class="form-check-label" for="role<?php echo $role['id']; ?>">
+                          <?php echo htmlspecialchars($role['name']); ?>
+                        </label>
+                      </div>
+                    </div>
+                  <?php endforeach; ?>
+                </div>
+                <div class="form-text">At least one role should be assigned.</div>
+              </div>
+
+              <div class="d-flex justify-content-between">
+                <a href="admin_users.php" class="btn btn-secondary">Cancel</a>
+                <button type="submit" class="btn btn-primary">Create User</button>
+              </div>
+            </form>
           </div>
-          <div class="modal-footer">
-            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-            <button type="submit" class="btn btn-primary">Save Changes</button>
-          </div>
-        </form>
+        </div>
       </div>
     </div>
   </div>
-  
+
   <!-- Bootstrap JS -->
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/js/bootstrap.bundle.min.js"></script>
+  <script>
+    // Password toggle visibility
+    document.getElementById('togglePassword').addEventListener('click', function() {
+      const passwordInput = document.getElementById('password');
+      const icon = this;
+
+      if (passwordInput.type === 'password') {
+        passwordInput.type = 'text';
+        icon.classList.remove('fa-eye-slash');
+        icon.classList.add('fa-eye');
+      } else {
+        passwordInput.type = 'password';
+        icon.classList.remove('fa-eye');
+        icon.classList.add('fa-eye-slash');
+      }
+    });
+
+    document.getElementById('toggleConfirmPassword').addEventListener('click', function() {
+      const confirmPasswordInput = document.getElementById('confirm_password');
+      const icon = this;
+
+      if (confirmPasswordInput.type === 'password') {
+        confirmPasswordInput.type = 'text';
+        icon.classList.remove('fa-eye-slash');
+        icon.classList.add('fa-eye');
+      } else {
+        confirmPasswordInput.type = 'password';
+        icon.classList.remove('fa-eye');
+        icon.classList.add('fa-eye-slash');
+      }
+    });
+
+    // Auto-formatting for Contact Number
+    const contactInput = document.getElementById('contact_number');
+    contactInput.addEventListener('input', function(e) {
+      let input = e.target.value.replace(/\D/g, ''); // Remove all non-digits
+
+      // If the user is trying to enter a number and hasn't typed +92 yet
+      if (input.length > 0 && !e.target.value.startsWith('+92')) {
+        // Add the +92 prefix
+        input = '+92 ' + input;
+      } else if (input.length > 0) {
+        // If it already has +92, format as +92 followed by the digits
+        input = '+92 ' + input.substring(2);
+      }
+
+      // Update the input field
+      e.target.value = input;
+    });
+
+    // Auto-formatting for CNIC
+    const cnicInput = document.getElementById('cnic');
+    cnicInput.addEventListener('input', function(e) {
+      let input = e.target.value.replace(/\D/g, ''); // Remove all non-digits
+      let formatted = '';
+
+      if (input.length > 0) {
+        // Format first 5 digits
+        if (input.length <= 5) {
+          formatted = input;
+        }
+        // Format first 5 digits plus hyphen plus next digits
+        else if (input.length <= 12) {
+          formatted = input.substring(0, 5) + '-' + input.substring(5);
+        }
+        // Format complete CNIC with both hyphens
+        else {
+          formatted = input.substring(0, 5) + '-' + input.substring(5, 12) + '-' + input.substring(12, 13);
+        }
+      }
+
+      // Update the input field
+      e.target.value = formatted;
+    });
+  </script>
+
 </body>
+
 </html>

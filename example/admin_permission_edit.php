@@ -18,20 +18,54 @@ if (!$auth->hasRole($userId, 'Admin')) {
 // Get database connection
 $db = (new Database())->getConnection();
 
-// Get all available roles for role assignment
+// Check if permission ID is provided
+if (!isset($_GET['id']) || !filter_var($_GET['id'], FILTER_VALIDATE_INT)) {
+  header('Location: admin_permissions.php');
+  exit;
+}
+
+$permissionId = (int)$_GET['id'];
+
+// Get permission data
+try {
+  $stmt = $db->prepare("SELECT * FROM permissions WHERE id = ?");
+  $stmt->execute([$permissionId]);
+  $permission = $stmt->fetch(PDO::FETCH_ASSOC);
+
+  if (!$permission) {
+    header('Location: admin_permissions.php');
+    exit;
+  }
+} catch (PDOException $e) {
+  die("Database error: " . $e->getMessage());
+}
+
+// Get all available roles
 try {
   $stmt = $db->query("SELECT id, name FROM roles ORDER BY name");
   $roles = $stmt->fetchAll(PDO::FETCH_ASSOC);
 } catch (PDOException $e) {
-  $error = "Database error: " . $e->getMessage();
-  $roles = [];
+  die("Database error: " . $e->getMessage());
+}
+
+// Get roles assigned to this permission
+try {
+  $stmt = $db->prepare("
+    SELECT role_id 
+    FROM role_permissions 
+    WHERE permission_id = ?
+  ");
+  $stmt->execute([$permissionId]);
+  $assignedRoles = $stmt->fetchAll(PDO::FETCH_COLUMN);
+} catch (PDOException $e) {
+  die("Database error: " . $e->getMessage());
 }
 
 $errors = [];
 $success = '';
-$permissionName = '';
-$permissionDescription = '';
-$selectedRoles = [];
+$permissionName = $permission['name'];
+$permissionDescription = $permission['description'] ?? '';
+$selectedRoles = $assignedRoles;
 
 // Process form submission
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -50,25 +84,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       $errors[] = 'Permission name must be at least 3 characters long.';
     }
 
-    // Check if permission name already exists
+    // Check if permission name already exists (but not this permission)
     if (empty($errors)) {
-      $stmt = $db->prepare("SELECT COUNT(*) FROM permissions WHERE name = ?");
-      $stmt->execute([$permissionName]);
+      $stmt = $db->prepare("SELECT COUNT(*) FROM permissions WHERE name = ? AND id != ?");
+      $stmt->execute([$permissionName, $permissionId]);
       if ($stmt->fetchColumn() > 0) {
         $errors[] = 'A permission with this name already exists.';
       }
     }
 
-    // If no errors, add the permission
+    // If no errors, update the permission
     if (empty($errors)) {
       try {
         // Begin transaction
         $db->beginTransaction();
 
-        // Insert permission
-        $stmt = $db->prepare("INSERT INTO permissions (name, description) VALUES (?, ?)");
-        $stmt->execute([$permissionName, $permissionDescription]);
-        $permissionId = $db->lastInsertId();
+        // Update permission
+        $stmt = $db->prepare("UPDATE permissions SET name = ?, description = ? WHERE id = ?");
+        $stmt->execute([$permissionName, $permissionDescription, $permissionId]);
+
+        // Delete existing role assignments
+        $stmt = $db->prepare("DELETE FROM role_permissions WHERE permission_id = ?");
+        $stmt->execute([$permissionId]);
 
         // Assign roles if selected
         foreach ($selectedRoles as $roleId) {
@@ -79,9 +116,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // Commit transaction
         $db->commit();
 
-        $success = "Permission '$permissionName' has been created successfully.";
-        $permissionName = $permissionDescription = '';
-        $selectedRoles = [];
+        $success = "Permission '$permissionName' has been updated successfully.";
       } catch (PDOException $e) {
         $db->rollBack();
         $errors[] = 'Database error: ' . $e->getMessage();
@@ -97,7 +132,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Add New Permission | Admin Dashboard</title>
+  <title>Edit Permission | Admin Dashboard</title>
   <!-- Bootstrap CSS -->
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/css/bootstrap.min.css" rel="stylesheet">
   <!-- Font Awesome -->
@@ -278,7 +313,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
           <ol class="breadcrumb">
             <li class="breadcrumb-item"><a href="admin_panel.php">Dashboard</a></li>
             <li class="breadcrumb-item"><a href="admin_permissions.php">Permissions</a></li>
-            <li class="breadcrumb-item active">Add New Permission</li>
+            <li class="breadcrumb-item active">Edit Permission</li>
           </ol>
         </nav>
 
@@ -303,7 +338,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         <div class="card mb-4">
           <div class="card-header">
-            <h5 class="card-title mb-0">Add New Permission</h5>
+            <h5 class="card-title mb-0">Edit Permission: <?php echo htmlspecialchars($permission['name']); ?></h5>
           </div>
           <div class="card-body">
             <form method="POST" action="">
@@ -322,7 +357,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
               </div>
 
               <div class="mb-4">
-                <label class="form-label">Assign to Roles (Optional)</label>
+                <label class="form-label">Assign to Roles</label>
                 <div class="row">
                   <?php foreach ($roles as $role): ?>
                     <div class="col-md-3 mb-2">
@@ -336,12 +371,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     </div>
                   <?php endforeach; ?>
                 </div>
-                <div class="form-text">You can assign this permission to one or more roles directly, or do it later from the role management page.</div>
               </div>
 
               <div class="d-flex justify-content-between">
                 <a href="admin_permissions.php" class="btn btn-secondary">Cancel</a>
-                <button type="submit" class="btn btn-primary">Create Permission</button>
+                <button type="submit" class="btn btn-primary">Update Permission</button>
               </div>
             </form>
           </div>
