@@ -418,6 +418,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
           <path d="M9 12l2 2 4-4" stroke="white" stroke-width="2" />
         </svg>
         <span class="logo-text">RoleAuth</span>
+        <a href="login.php" class="text-decoration-none bg-primary text-white py-3 px-4 ms-auto">Back</a>
       </div>
 
       <?php if (!empty($errors)): ?>
