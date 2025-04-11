@@ -1,8 +1,20 @@
 {
+  "name": "usama/php-library",
+  "description": "A PHP library for [describe purpose]",
+  "type": "library",
+  "license": "MIT",
+  "authors": [
+    {
+      "name": "Usama Bashir",
+      "email": "usamab@mudsoft.tech"
+    }
+  ],
   "require": {
-      "league/oauth2-client": "^2.8",
-      "league/oauth2-google": "^4.0",
-      "league/oauth2-facebook": "^2.2",
-      "league/oauth2-github": "^3.1"
+    "php": ">=7.4"
+  },
+  "autoload": {
+    "psr-4": {
+      "Usama\\PhpLibrary\\": "src/"
+    }
   }
 }
